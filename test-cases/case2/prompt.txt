@@ -1,0 +1,1 @@
+Write a TypeScript function named `sumArray` that takes an array of numbers and returns their sum. If the array is empty, it should return 0.

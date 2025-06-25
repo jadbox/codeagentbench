@@ -1,0 +1,1 @@
+Write a TypeScript function named `greet` that takes a string argument `name` and returns a greeting string "Hello, [name]!".
