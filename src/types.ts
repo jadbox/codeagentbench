@@ -10,6 +10,9 @@ export enum AgentTool {
 }
 
 export interface BenchmarkMetrics {
+  agent: AgentTool;
+  testCaseId: string;
+  llmProvider: LLMProvider;
   lineCount: number;
   durationMs: number;
   passedUnitTests: boolean;

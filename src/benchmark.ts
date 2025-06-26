@@ -10,7 +10,7 @@ async function ensureDir(dirPath: string) {
   try {
     await fs.mkdir(dirPath, { recursive: true });
   } catch (error: any) {
-    if (error.code !== 'EEXIST') {
+    if (error.code !== "EEXIST") {
       throw error;
     }
   }
@@ -35,19 +35,30 @@ async function runAgent(
   testCase: TestCase
 ): Promise<{ durationMs: number }> {
   const startTime = Date.now();
-  console.log(`Simulating ${agent} run for test case ${testCase.id} with ${llmProvider}...`);
-  
+  console.log(
+    `Simulating ${agent} run for test case ${testCase.id} with ${llmProvider}...`
+  );
+
   // In a real scenario, you would invoke the agent's CLI here.
   // e.g., await $`aider --model <model_for_llmProvider> ${promptFilePath} -o ${outputFilePath}`;
   // For now, we'll copy the reference solution to simulate agent output.
   try {
+    // Check if the reference solution exists
+    await fs.access(testCase.referenceSolutionPath);
     await fs.copyFile(testCase.referenceSolutionPath, outputFilePath);
     console.log(`Copied reference solution to ${outputFilePath}`);
   } catch (error) {
-    console.error(`Failed to copy reference solution:`, error);
-    await fs.writeFile(outputFilePath, "// Agent failed to produce output", "utf-8");
+    // If reference solution doesn't exist or other error, create a placeholder file
+    console.warn(
+      `Could not copy reference solution for ${testCase.id}. A placeholder file will be used.`
+    );
+    await fs.writeFile(
+      outputFilePath,
+      "// Agent to generate solution here",
+      "utf-8"
+    );
   }
-  
+
   const durationMs = Date.now() - startTime;
   console.log(`${agent} simulation finished in ${durationMs}ms.`);
   return { durationMs };
@@ -56,37 +67,62 @@ async function runAgent(
 async function runUnitTests(
   testCase: TestCase,
   generatedSolutionPath: string
-): Promise<{ passed: boolean; output: string }> {
+): Promise<{ passed: boolean; output: string; durationMs: number }> {
   const testDir = path.dirname(testCase.unitTestPath);
   const testFileName = path.basename(testCase.unitTestPath);
-  
+
   // Create a temporary directory for running this specific test
-  const tempTestRunDir = path.join(TEMP_DIR, `test_run_${testCase.id}_${Date.now()}`);
+  const tempTestRunDir = path.join(
+    TEMP_DIR,
+    `test_run_${testCase.id}_${Date.now()}`
+  );
   await ensureDir(tempTestRunDir);
 
   const tempUnitTestPath = path.join(tempTestRunDir, testFileName);
-  const tempGeneratedSolutionPath = path.join(tempTestRunDir, "generated_solution.ts"); // The file unit test will import
+  const tempGeneratedSolutionPath = path.join(
+    tempTestRunDir,
+    "generated_solution.ts"
+  ); // The file unit test will import
+
+  let durationMs = 0;
 
   try {
-    // Copy unit test file and generated solution to the temporary test directory
-    await fs.copyFile(testCase.unitTestPath, tempUnitTestPath);
+    // Copy all files from the original test case directory to the temporary one
+    const testCaseDir = path.dirname(testCase.unitTestPath);
+    await fs.cp(testCaseDir, tempTestRunDir, { recursive: true });
+
+    // Overwrite the generated solution file in the temporary directory
     await fs.copyFile(generatedSolutionPath, tempGeneratedSolutionPath);
 
     console.log(`Running unit tests for ${testCase.id} in ${tempTestRunDir}`);
     // The unit test file (e.g., unit.test.ts) should import from "./generated_solution.ts"
-    const { stdout, stderr, exitCode } = await $`bun test ${tempUnitTestPath}`.nothrow();
+    const { stdout, stderr, exitCode } = await $`bun test`
+      .cwd(tempTestRunDir)
+      .nothrow();
 
     const output = `Stdout:\n${stdout.toString()}\nStderr:\n${stderr.toString()}`;
     console.log(`Unit test for ${testCase.id} exited with code ${exitCode}.`);
-    return { passed: exitCode === 0, output };
+
+    // Extract duration from bun test output
+    const durationMatch = output.match(
+      /Ran \d+ tests across \d+ files\. \[(\d+\.\d+)ms\]/
+    );
+    if (durationMatch && durationMatch[1]) {
+      durationMs = parseFloat(durationMatch[1]);
+    }
+
+    return { passed: exitCode === 0, output, durationMs };
   } catch (error: any) {
     console.error(`Error running unit tests for ${testCase.id}:`, error);
-    return { passed: false, output: `Error during test execution: ${error.message}` };
+    return {
+      passed: false,
+      output: `Error during test execution: ${error.message}`,
+      durationMs: 0,
+    };
   } finally {
     // Clean up the temporary test run directory
-    // await fs.rm(tempTestRunDir, { recursive: true, force: true });
-    // console.log(`Cleaned up temporary test directory: ${tempTestRunDir}`);
-    // For debugging, you might want to leave this directory.
+    await fs.rm(tempTestRunDir, { recursive: true, force: true });
+    console.log(`Cleaned up temporary test directory: ${tempTestRunDir}`);
   }
 }
 
@@ -95,44 +131,77 @@ export async function runSingleBenchmark(
   agent: AgentTool,
   llmProvider: LLMProvider
 ): Promise<BenchmarkMetrics> {
-  console.log(`\nStarting benchmark for: ${agent}, Test Case: ${testCase.id}, LLM: ${llmProvider}`);
+  console.log(
+    `\nStarting benchmark for: ${agent}, Test Case: ${testCase.id}, LLM: ${llmProvider}`
+  );
 
-  const agentResultDir = path.join(RESULTS_DIR, agent.toString(), `${testCase.id}_${llmProvider}`);
+  const agentResultDir = path.join(
+    RESULTS_DIR,
+    agent.toString(),
+    `${testCase.id}_${llmProvider}`
+  );
   await ensureDir(agentResultDir);
   await ensureDir(TEMP_DIR);
 
-  const generatedSolutionPath = path.join(TEMP_DIR, `${testCase.id}_${agent}_${llmProvider}_solution.ts`);
+  const generatedSolutionPath = path.join(
+    TEMP_DIR,
+    `${testCase.id}_${agent}_${llmProvider}_solution.ts`
+  );
   const promptContent = await fs.readFile(testCase.promptPath, "utf-8");
 
   // Simulate agent running and generating the solution
-  const { durationMs } = await runAgent(agent, promptContent, generatedSolutionPath, llmProvider, testCase);
+  const agentRunDurationMs = await runAgent(
+    agent,
+    promptContent,
+    generatedSolutionPath,
+    llmProvider,
+    testCase
+  );
 
   // Calculate line count of the generated solution
   const lineCount = await countLines(generatedSolutionPath);
 
   // Run unit tests on the generated solution
-  const { passed: passedUnitTests, output: unitTestOutput } = await runUnitTests(testCase, generatedSolutionPath);
+  const {
+    passed: passedUnitTests,
+    output: unitTestOutput,
+    durationMs: unitTestDurationMs,
+  } = await runUnitTests(testCase, generatedSolutionPath);
 
   // Save the generated solution to the results directory
-  const finalOutputFilePath = path.join(agentResultDir, "generated_solution.ts");
+  const finalOutputFilePath = path.join(
+    agentResultDir,
+    "generated_solution.ts"
+  );
   await fs.copyFile(generatedSolutionPath, finalOutputFilePath);
 
   const metrics: BenchmarkMetrics = {
+    agent,
+    testCaseId: testCase.id,
+    llmProvider,
     lineCount,
-    durationMs,
+    durationMs: unitTestDurationMs,
     passedUnitTests,
     unitTestOutput,
   };
 
   const metricsFilePath = path.join(agentResultDir, "metrics.json");
-  await fs.writeFile(metricsFilePath, JSON.stringify(metrics, null, 2), "utf-8");
+  await fs.writeFile(
+    metricsFilePath,
+    JSON.stringify(metrics, null, 2),
+    "utf-8"
+  );
 
-  console.log(`Metrics for ${agent}, ${testCase.id}, ${llmProvider} saved to ${metricsFilePath}`);
+  console.log(
+    `Metrics for ${agent}, ${testCase.id}, ${llmProvider} saved to ${metricsFilePath}`
+  );
   console.log(metrics);
 
   // Clean up temporary generated solution file
-  // await fs.rm(generatedSolutionPath, { force: true });
-  // For debugging, you might want to leave this file.
+  await fs.rm(generatedSolutionPath, { force: true });
+  console.log(
+    `Cleaned up temporary generated solution file: ${generatedSolutionPath}`
+  );
 
   return metrics;
 }
@@ -140,11 +209,8 @@ export async function runSingleBenchmark(
 export async function cleanupTempDir() {
   try {
     if (await fs.exists(TEMP_DIR)) {
-      // console.log(`Cleaning up temporary benchmark directory: ${TEMP_DIR}`);
-      // await fs.rm(TEMP_DIR, { recursive: true, force: true });
-      // For debugging, it's often useful to inspect the temp directory.
-      // Enable removal for production/CI.
-      console.warn(`Temporary directory ${TEMP_DIR} was not removed. Remove manually or uncomment cleanup code.`);
+      console.log(`Cleaning up temporary benchmark directory: ${TEMP_DIR}`);
+      await fs.rm(TEMP_DIR, { recursive: true, force: true });
     }
   } catch (error) {
     console.error(`Error cleaning up temporary directory ${TEMP_DIR}:`, error);

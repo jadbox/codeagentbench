@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "start": "bun run index.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "ubench": "bun run index.ts --llm gemini && bun run update-results.ts"
   },
   "dependencies": {
     "commander": "^12.1.0"

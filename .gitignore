@@ -1,0 +1,7 @@
+.aider*
+node_modules
+dist
+RESULTS.md
+temp_benchmark_run
+bun.lock
+results/
